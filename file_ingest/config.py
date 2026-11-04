@@ -13,6 +13,7 @@ class Settings:
     input_dir: Path
     schemas: tuple[str, ...]
     batch_size: int = 1000
+    workers: int = 4
 
     @classmethod
     def from_environment(cls) -> "Settings":
@@ -32,8 +33,11 @@ class Settings:
             if part.strip()
         )
         batch_size = int(os.environ.get("BATCH_SIZE", "1000"))
+        workers = int(os.environ.get("WORKERS", "4"))
         if batch_size < 1:
             raise ValueError("BATCH_SIZE must be greater than zero")
         if not schemas:
             raise ValueError("SCHEMAS must contain at least one schema")
-        return cls(jdbc_url, jdbc_driver, jdbc_jar, input_dir, schemas, batch_size)
+        if workers < 1:
+            raise ValueError("WORKERS must be greater than zero")
+        return cls(jdbc_url, jdbc_driver, jdbc_jar, input_dir, schemas, batch_size, workers)
