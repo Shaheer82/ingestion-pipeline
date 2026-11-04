@@ -1,7 +1,7 @@
 from collections.abc import Sequence
+import json
 
-import psycopg
-from psycopg import sql
+import jaydebeapi
 
 from .models import TargetColumn, TargetTable
 
@@ -24,30 +24,42 @@ CREATE TABLE IF NOT EXISTS ingestion_jobs (
 """
 
 
-def connect(database_url: str) -> psycopg.Connection:
-    return psycopg.connect(database_url)
+def connect(jdbc_url: str, jdbc_driver: str, jdbc_jar: str) -> jaydebeapi.Connection:
+    """Open a JDBC connection through the configured Java database driver."""
+    connection = jaydebeapi.connect(jdbc_driver, jdbc_url, jars=jdbc_jar)
+    connection.jconn.setAutoCommit(False)
+    return connection
 
 
-def ensure_tracking_schema(connection: psycopg.Connection) -> None:
-    with connection.cursor() as cursor:
+def ensure_tracking_schema(connection: jaydebeapi.Connection) -> None:
+    cursor = connection.cursor()
+    try:
         cursor.execute(TRACKING_DDL)
+    finally:
+        cursor.close()
     connection.commit()
 
 
-def load_target_tables(connection: psycopg.Connection, schemas: Sequence[str]) -> list[TargetTable]:
+def load_target_tables(connection: jaydebeapi.Connection, schemas: Sequence[str]) -> list[TargetTable]:
+    if not schemas:
+        return []
+    schema_placeholders = ", ".join("?" for _ in schemas)
     query = """
         SELECT c.table_schema, c.table_name, c.column_name, c.data_type,
                c.udt_name, c.is_nullable, c.column_default, c.is_generated
         FROM information_schema.columns AS c
         JOIN information_schema.tables AS t
           ON t.table_schema = c.table_schema AND t.table_name = c.table_name
-        WHERE c.table_schema = ANY(%s)
+        WHERE c.table_schema IN ({schema_placeholders})
           AND t.table_type = 'BASE TABLE'
         ORDER BY c.table_schema, c.table_name, c.ordinal_position
-    """
-    with connection.cursor() as cursor:
-        cursor.execute(query, (list(schemas),))
+    """.format(schema_placeholders=schema_placeholders)
+    cursor = connection.cursor()
+    try:
+        cursor.execute(query, tuple(schemas))
         rows = cursor.fetchall()
+    finally:
+        cursor.close()
 
     grouped: dict[tuple[str, str], list[TargetColumn]] = {}
     for schema, table, name, data_type, udt_name, nullable, default, generated in rows:
@@ -64,16 +76,17 @@ def load_target_tables(connection: psycopg.Connection, schemas: Sequence[str]) -
     return [TargetTable(schema, table, tuple(columns)) for (schema, table), columns in grouped.items()]
 
 
-def record_job(connection: psycopg.Connection, file, match) -> int:
+def record_job(connection: jaydebeapi.Connection, file, match) -> int:
     target_schema = match.target.schema if match.target else None
     target_table = match.target.name if match.target else None
-    with connection.cursor() as cursor:
+    cursor = connection.cursor()
+    try:
         cursor.execute(
             """
             INSERT INTO ingestion_jobs
                 (file_identity, file_name, file_path, file_size_bytes,
                  target_schema, target_table, status, match_candidates, details)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?)
             ON CONFLICT (file_identity) DO UPDATE SET
                 file_name = EXCLUDED.file_name,
                 file_path = EXCLUDED.file_path,
@@ -94,10 +107,12 @@ def record_job(connection: psycopg.Connection, file, match) -> int:
                 target_schema,
                 target_table,
                 match.status,
-                psycopg.types.json.Json(list(match.candidates)),
+                json.dumps(list(match.candidates)),
                 match.details,
             ),
         )
         job_id = cursor.fetchone()[0]
+    finally:
+        cursor.close()
     connection.commit()
     return job_id
