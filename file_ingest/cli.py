@@ -1,7 +1,7 @@
 import argparse
+from contextlib import closing
 import json
 import sys
-from pprint import pprint
 
 from .config import Settings
 from .database import connect, ensure_tracking_schema, load_target_tables, record_job
@@ -21,7 +21,7 @@ def main() -> int:
         input_dir = args.input_dir or settings.input_dir
         schemas = tuple(part.strip() for part in args.schemas.split(",") if part.strip()) if args.schemas else settings.schemas
         files = discover_files(input_dir)
-        with connect(settings.database_url) as connection:
+        with closing(connect(settings.jdbc_url, settings.jdbc_driver, settings.jdbc_jar)) as connection:
             ensure_tracking_schema(connection)
             tables = load_target_tables(connection, schemas)
             for file in files:

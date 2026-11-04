@@ -13,10 +13,13 @@ The current matching policy is deliberately conservative:
 
 ## Setup
 
-1. Create and activate a Python virtual environment.
-2. Install dependencies with `pip install -r requirements.txt`.
-3. Copy `.env.example` to `.env` and set `DATABASE_URL`, `INPUT_DIR`, and eligible `SCHEMAS`. The app reads `.env`; `.env` is ignored by Git so local credentials are not committed.
-4. Run `python main.py`.
+1. Create and activate a Python virtual environment with a Java runtime available.
+2. Install Python dependencies with `pip install -r requirements.txt`.
+3. Download the PostgreSQL JDBC driver JAR and place it in `drivers/` (or another local path).
+4. Copy `.env.example` to `.env` and set `JDBC_URL`, `JDBC_JAR`, `INPUT_DIR`, and eligible `SCHEMAS`. `JDBC_DRIVER` defaults to `org.postgresql.Driver`. The app reads `.env`; `.env` is ignored by Git.
+5. Run `python main.py`.
+
+Database access uses JDBC through JayDeBeApi and the PostgreSQL JDBC driver. `JDBC_URL` uses the PostgreSQL JDBC format, for example `jdbc:postgresql://localhost:5432/postgres?user=postgres&password=YOUR_PASSWORD`; URL-encode special characters in credentials. `JDBC_JAR` must point to the downloaded PostgreSQL driver JAR.
 
 The database role needs permission to read table metadata in the eligible schemas and create the `ingestion_jobs` tracking table. This milestone only discovers and records file/table matches; it does not insert target data yet.
 
