@@ -51,8 +51,24 @@ CREATE TABLE IF NOT EXISTS ingestion_staging_rows (
     job_id BIGINT NOT NULL REFERENCES ingestion_jobs(job_id) ON DELETE CASCADE,
     source_row_number BIGINT NOT NULL,
     raw_record JSONB NOT NULL,
+    validation_status TEXT,
+    error_category TEXT,
+    error_details TEXT,
+    validated_at TIMESTAMPTZ,
     PRIMARY KEY (job_id, source_row_number)
 );
+""",
+"""
+ALTER TABLE ingestion_staging_rows ADD COLUMN IF NOT EXISTS validation_status TEXT;
+""",
+"""
+ALTER TABLE ingestion_staging_rows ADD COLUMN IF NOT EXISTS error_category TEXT;
+""",
+"""
+ALTER TABLE ingestion_staging_rows ADD COLUMN IF NOT EXISTS error_details TEXT;
+""",
+"""
+ALTER TABLE ingestion_staging_rows ADD COLUMN IF NOT EXISTS validated_at TIMESTAMPTZ;
 """,
 """
 CREATE TABLE IF NOT EXISTS ingestion_row_errors (

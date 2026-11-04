@@ -54,6 +54,7 @@ def _target_insert_sql(match: MatchResult, headers: list[str]):
         f"INSERT INTO {table_sql} ({column_sql}){overriding} "
         f"SELECT {', '.join(expressions)} FROM ingestion_staging_rows AS s "
         "WHERE s.job_id = ? AND s.source_row_number BETWEEN ? AND ? "
+        "AND s.validation_status = 'valid' "
         "ORDER BY s.source_row_number"
     )
     row_sql = (
@@ -66,6 +67,10 @@ def _target_insert_sql(match: MatchResult, headers: list[str]):
 def _lookup_batch(connection, job_id: int, batch_number: int):
     cursor = connection.cursor()
     try:
+        # Initialize this session's temporary schema before creating its helper.
+        cursor.execute(
+            "CREATE TEMP TABLE IF NOT EXISTS ingest_validation_bootstrap (value INTEGER)"
+        )
         cursor.execute(
             "SELECT status FROM ingestion_batches WHERE job_id = ? AND batch_number = ?",
             (job_id, batch_number),
@@ -101,7 +106,9 @@ def _stage_batch(connection, job_id: int, batch_number: int, rows: list[tuple[in
         cursor.execute(
             "INSERT INTO ingestion_staging_rows (job_id, source_row_number, raw_record) VALUES "
             + placeholders
-            + " ON CONFLICT (job_id, source_row_number) DO UPDATE SET raw_record = EXCLUDED.raw_record",
+            + " ON CONFLICT (job_id, source_row_number) DO UPDATE SET "
+              "raw_record = EXCLUDED.raw_record, validation_status = NULL, "
+              "error_category = NULL, error_details = NULL, validated_at = NULL",
             tuple(values),
         )
         connection.commit()
@@ -112,11 +119,95 @@ def _stage_batch(connection, job_id: int, batch_number: int, rows: list[tuple[in
         cursor.close()
 
 
+def _create_validation_function(connection) -> None:
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            """CREATE OR REPLACE FUNCTION pg_temp.ingest_is_valid_cast(input_value TEXT, target_type TEXT)
+               RETURNS BOOLEAN LANGUAGE plpgsql AS $$
+               BEGIN
+                   EXECUTE format('SELECT $1::%s', target_type) USING input_value;
+                   RETURN TRUE;
+               EXCEPTION WHEN OTHERS THEN
+                   RETURN FALSE;
+               END;
+               $$"""
+        )
+        cursor.execute("DROP TABLE pg_temp.ingest_validation_bootstrap")
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        cursor.close()
+
+
+def _validate_batch(connection, job_id: int, batch_number: int, rows, match: MatchResult, headers: list[str]):
+    target = match.target
+    input_names = {normalize_field_name(name): name for name in headers}
+    checks = []
+    for column in target.columns:
+        if column.generated:
+            continue
+        source_name = input_names[normalize_field_name(column.name)]
+        value_sql = f"s.raw_record ->> {_quote_literal(source_name)}"
+        column_label = _quote_literal(column.name)
+        type_label = column.type_sql.replace("'", "''")
+        if not column.nullable:
+            checks.append(
+                f"CASE WHEN {value_sql} IS NULL THEN "
+                f"'column ' || {column_label} || ' cannot be NULL' END"
+            )
+        checks.append(
+            f"CASE WHEN {value_sql} IS NOT NULL AND NOT "
+            f"pg_temp.ingest_is_valid_cast({value_sql}, {_quote_literal(column.type_sql)}) "
+            f"THEN 'value for column ' || {column_label} || ' cannot be converted to "
+            f"{type_label}' END"
+        )
+
+    start_row, end_row = rows[0][0], rows[-1][0]
+    cursor = connection.cursor()
+    try:
+        details = "NULL" if not checks else f"NULLIF(concat_ws('; ', {', '.join(checks)}), '')"
+        cursor.execute(
+            f"""WITH validation AS (
+                    SELECT s.job_id, s.source_row_number, {details} AS error_text
+                    FROM ingestion_staging_rows AS s
+                    WHERE s.job_id = ? AND s.source_row_number BETWEEN ? AND ?
+                )
+                UPDATE ingestion_staging_rows AS s
+                SET validation_status = CASE WHEN v.error_text IS NULL THEN 'valid' ELSE 'invalid' END,
+                    error_category = CASE WHEN v.error_text IS NULL THEN NULL ELSE 'type_or_nullability' END,
+                    error_details = v.error_text,
+                    validated_at = now()
+                FROM validation AS v
+                WHERE s.job_id = v.job_id AND s.source_row_number = v.source_row_number""",
+            (job_id, start_row, end_row),
+        )
+        cursor.execute(
+            """SELECT source_row_number, validation_status FROM ingestion_staging_rows
+               WHERE job_id = ? AND source_row_number BETWEEN ? AND ?""",
+            (job_id, start_row, end_row),
+        )
+        states = dict(cursor.fetchall())
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        cursor.close()
+    valid_rows = [row for row in rows if states.get(row[0]) == "valid"]
+    invalid_count = len(rows) - len(valid_rows)
+    return valid_rows, invalid_count
+
+
 def _write_batch(
     connection,
     job_id: int,
     batch_number: int,
     rows: list[tuple[int, dict]],
+    valid_rows: list[tuple[int, dict]],
+    invalid_count: int,
     bulk_sql: str,
     row_sql: str,
     source_keys: list[str],
@@ -125,21 +216,35 @@ def _write_batch(
     cursor = connection.cursor()
     inserted = failed = 0
     try:
+        cursor.execute(
+            "DELETE FROM ingestion_row_errors WHERE job_id = ? AND source_row_number BETWEEN ? AND ?",
+            (job_id, start_row, end_row),
+        )
+        cursor.execute(
+            """INSERT INTO ingestion_row_errors
+                 (job_id, batch_number, source_row_number, error_category, details)
+               SELECT job_id, ?, source_row_number, error_category, error_details
+               FROM ingestion_staging_rows
+               WHERE job_id = ? AND source_row_number BETWEEN ? AND ?
+                 AND validation_status = 'invalid'
+               ON CONFLICT (job_id, source_row_number) DO UPDATE SET
+                 batch_number = EXCLUDED.batch_number,
+                 error_category = EXCLUDED.error_category,
+                 details = EXCLUDED.details, created_at = now()""",
+            (batch_number, job_id, start_row, end_row),
+        )
+        failed = invalid_count
         cursor.execute("SAVEPOINT bulk_target_write")
         try:
             cursor.execute(bulk_sql, (job_id, start_row, end_row))
-            inserted = len(rows)
+            inserted = len(valid_rows)
             cursor.execute("RELEASE SAVEPOINT bulk_target_write")
-            cursor.execute(
-                "DELETE FROM ingestion_row_errors WHERE job_id = ? AND source_row_number BETWEEN ? AND ?",
-                (job_id, start_row, end_row),
-            )
         except Exception:
             # A data error rolls back the set-based write. Retry rows behind
             # savepoints so valid records survive and each bad row is recorded.
             cursor.execute("ROLLBACK TO SAVEPOINT bulk_target_write")
             cursor.execute("RELEASE SAVEPOINT bulk_target_write")
-            for source_row, record in rows:
+            for source_row, record in valid_rows:
                 cursor.execute("SAVEPOINT one_target_row")
                 try:
                     cursor.execute(row_sql, tuple(record.get(key) for key in source_keys))
@@ -189,6 +294,7 @@ def _write_batch(
 def process_file(connection, file: DiscoveredFile, job_id: int, match: MatchResult, batch_size: int):
     headers = read_headers(file.path)
     bulk_sql, row_sql, source_keys = _target_insert_sql(match, headers)
+    _create_validation_function(connection)
     cursor = connection.cursor()
     try:
         cursor.execute(
@@ -204,8 +310,12 @@ def process_file(connection, file: DiscoveredFile, job_id: int, match: MatchResu
         if _lookup_batch(connection, job_id, batch_number) in {"succeeded", "succeeded_with_errors"}:
             continue
         _stage_batch(connection, job_id, batch_number, rows)
+        valid_rows, invalid_count = _validate_batch(
+            connection, job_id, batch_number, rows, match, headers
+        )
         inserted, failed = _write_batch(
-            connection, job_id, batch_number, rows, bulk_sql, row_sql, source_keys
+            connection, job_id, batch_number, rows, valid_rows, invalid_count,
+            bulk_sql, row_sql, source_keys
         )
         total_inserted += inserted
         total_failed += failed
