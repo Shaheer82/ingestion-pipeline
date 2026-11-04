@@ -1,15 +1,15 @@
 # PostgreSQL file ingestion
 
-Initial implementation milestone: discover CSV, XLSX, JSON-array, and JSON Lines files; inspect their field names; find a unique eligible PostgreSQL table by required column-name coverage; and persist every match outcome in `ingestion_jobs` (including no-match and ambiguous results).
+Initial implementation milestone: discover comma-separated CSV and flat JSON files; inspect their field names; find a unique eligible PostgreSQL table by required column-name coverage; and persist every match outcome in `ingestion_jobs` (including no-match and ambiguous results).
 
 The current matching policy is deliberately conservative:
 
 - All target columns are required to be present in the source, following the initial requirement. This includes defaulted/generated columns until the client confirms those may be omitted.
 - Extra source fields are permitted.
-- Matching trims surrounding whitespace, ignores case and internal spaces, and treats `_` and `-` as equivalent by removing them before comparison. For example, `Customer ID`, `customer_id`, and `Customer-ID` match. Duplicate input headers that normalize to the same name are rejected.
+- Matching ignores letter case only. Spaces, underscores, hyphens, and other punctuation are preserved. For example, `CUSTOMER_ID` matches `customer_id`, but `Customer ID` does not. Duplicate input headers are rejected when they differ only by letter case.
 - A file matching more than one table is recorded as `ambiguous_match`; the importer does not guess.
-- For XLSX, the first worksheet is used for discovery and reading until worksheet rules are confirmed.
-- JSON files are expected to be an array of objects; `.jsonl`/`.ndjson` files are also supported.
+- CSV files must be comma-separated.
+- JSON may be one flat object or an array of flat objects. Nested objects and arrays inside records are rejected. JSON Lines/NDJSON is not supported.
 
 ## Setup
 
