@@ -16,7 +16,28 @@ The importer discovers comma-separated CSV and flat JSON files, matches each fil
 2. Install dependencies with `pip install -r requirements.txt`.
 3. Download the PostgreSQL JDBC driver JAR and place it in `drivers/` (or another local path).
 4. Copy `.env.example` to `.env` and set `JDBC_URL`, `JDBC_JAR`, `INPUT_DIR`, and eligible `SCHEMAS`. `JDBC_DRIVER` defaults to `org.postgresql.Driver`. The app reads `.env`; `.env` is ignored by Git.
-5. Run `python main.py`.
+5. Run `python main.py` to use `INPUT_DIR`, or pass a file/folder path and optional target table as positional arguments.
+
+Examples (PowerShell):
+
+```powershell
+# Existing behavior: scan INPUT_DIR and automatically match each file
+python main.py
+
+# Automatically match files from this folder
+python main.py "C:\data\incoming"
+
+# Process only this file and automatically match it
+python main.py "C:\data\incoming\customers.csv"
+
+# Process folder files only against the named table
+python main.py "C:\data\incoming" customers
+
+# Process one file only against a schema-qualified table
+python main.py "C:\data\incoming\customers.csv" ingest_demo.customers
+```
+
+When a table name is supplied, it restricts matching to that table; all of its columns must still match the file fields. If a bare table name exists in multiple eligible schemas, the job is recorded as `ambiguous_target_table`; provide `schema.table` to choose one. A supplied table name is part of the job identity, so the same file can be intentionally ingested against different target tables without reusing the other table's checkpoint.
 
 Database access uses JDBC through JayDeBeApi and the PostgreSQL JDBC driver. `JDBC_URL` uses the PostgreSQL JDBC format, for example `jdbc:postgresql://localhost:5432/postgres?user=postgres&password=YOUR_PASSWORD`; URL-encode special characters in credentials. `JDBC_JAR` must point to the downloaded PostgreSQL driver JAR.
 
