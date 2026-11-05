@@ -2,6 +2,8 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import closing
 import json
+import logging
+from pathlib import Path
 import sys
 
 from .config import Settings
@@ -40,6 +42,15 @@ def _process_task(settings: Settings, file, job_id: int, match: MatchResult, bat
 
 
 def main() -> int:
+    log_file = Path(__file__).resolve().parents[1] / "ingestion.log"
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        handlers=[
+            logging.FileHandler(log_file, encoding="utf-8"),
+            logging.StreamHandler(),
+        ],
+    )
     parser = argparse.ArgumentParser(description="Ingest CSV and flat JSON files into matched PostgreSQL tables")
     parser.add_argument("--input-dir", help="Override INPUT_DIR")
     parser.add_argument("--schemas", help="Comma-separated eligible PostgreSQL schemas")
@@ -56,6 +67,9 @@ def main() -> int:
             tables = load_target_tables(connection, schemas)
             for file in files:
                 previous_job = find_job(connection, file.identity)
+
+                logging.info("Previous job data: %s for file identity: %s", previous_job, file.identity)
+
                 if previous_job and previous_job[1] in {"succeeded", "succeeded_with_errors"}:
                     print(json.dumps({
                         "job_id": previous_job[0],
@@ -100,6 +114,23 @@ def main() -> int:
                         "details": match.details,
                     }, indent=2))
 
+        logging.info(
+            "Queued ingestion tasks: %s",
+            json.dumps(
+                [
+                    {
+                        "file": file.path.name,
+                        "file_identity": file.identity,
+                        "job_id": job_id,
+                        "target": match.target.qualified_name if match.target else None,
+                        "match_status": match.status,
+                        "batch_size": batch_size,
+                    }
+                    for file, job_id, match, batch_size in tasks
+                ],
+                ensure_ascii=False,
+            ),
+        )
         if tasks:
             with ThreadPoolExecutor(max_workers=min(settings.workers, len(tasks))) as executor:
                 futures = [

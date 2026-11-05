@@ -2,10 +2,14 @@
 
 from collections.abc import Iterator
 import json
+import logging
 
 from .models import DiscoveredFile, MatchResult
 from .names import normalize_field_name
 from .readers import iter_records, read_headers
+
+
+logger = logging.getLogger(__name__)
 
 
 def _quote_identifier(value: str) -> str:
@@ -235,40 +239,61 @@ def _write_batch(
             (batch_number, job_id, start_row, end_row),
         )
         failed = invalid_count
-        cursor.execute("SAVEPOINT bulk_target_write")
-        try:
-            cursor.execute(bulk_sql, (job_id, start_row, end_row))
-            inserted = len(valid_rows)
-            cursor.execute("RELEASE SAVEPOINT bulk_target_write")
-        except Exception:
-            # A data error rolls back the set-based write. Retry rows behind
-            # savepoints so valid records survive and each bad row is recorded.
-            cursor.execute("ROLLBACK TO SAVEPOINT bulk_target_write")
-            cursor.execute("RELEASE SAVEPOINT bulk_target_write")
-            for source_row, record in valid_rows:
-                cursor.execute("SAVEPOINT one_target_row")
-                try:
-                    cursor.execute(row_sql, tuple(record.get(key) for key in source_keys))
-                    cursor.execute("RELEASE SAVEPOINT one_target_row")
-                    cursor.execute(
-                        "DELETE FROM ingestion_row_errors WHERE job_id = ? AND source_row_number = ?",
-                        (job_id, source_row),
-                    )
-                    inserted += 1
-                except Exception as error:
-                    cursor.execute("ROLLBACK TO SAVEPOINT one_target_row")
-                    cursor.execute("RELEASE SAVEPOINT one_target_row")
-                    cursor.execute(
-                        """INSERT INTO ingestion_row_errors
-                             (job_id, batch_number, source_row_number, error_category, details)
-                           VALUES (?, ?, ?, 'target_insert_error', ?)
-                           ON CONFLICT (job_id, source_row_number) DO UPDATE SET
-                             batch_number = EXCLUDED.batch_number,
-                             error_category = EXCLUDED.error_category,
-                             details = EXCLUDED.details, created_at = now()""",
-                        (job_id, batch_number, source_row, str(error)[:4000]),
-                    )
-                    failed += 1
+        if valid_rows:
+            cursor.execute("SAVEPOINT bulk_target_write")
+            try:
+                cursor.execute(bulk_sql, (job_id, start_row, end_row))
+                inserted = len(valid_rows)
+                cursor.execute("RELEASE SAVEPOINT bulk_target_write")
+                logger.info(
+                    "Bulk insert succeeded; Bulk SQL=%s; valid_rows=%d; job id=%d; start row=%d; end row=%d",
+                    bulk_sql,
+                    len(valid_rows),
+                    job_id,
+                    start_row,
+                    end_row,
+                )
+            except Exception:
+                logger.info(
+                    "Bulk insert failed, entered row-by-row insertion; Row SQL=%s; valid_rows=%d",
+                    row_sql,
+                    len(valid_rows),
+                )
+                # A database constraint rejected the bulk write. Retry only
+                # these otherwise-valid rows to identify the rejected rows.
+                cursor.execute("ROLLBACK TO SAVEPOINT bulk_target_write")
+                cursor.execute("RELEASE SAVEPOINT bulk_target_write")
+                for source_row, record in valid_rows:
+                    cursor.execute("SAVEPOINT one_target_row")
+                    try:
+                        cursor.execute(row_sql, tuple(record.get(key) for key in source_keys))
+                        cursor.execute("RELEASE SAVEPOINT one_target_row")
+                        cursor.execute(
+                            "DELETE FROM ingestion_row_errors WHERE job_id = ? AND source_row_number = ?",
+                            (job_id, source_row),
+                        )
+                        inserted += 1
+                    except Exception as error:
+                        cursor.execute("ROLLBACK TO SAVEPOINT one_target_row")
+                        cursor.execute("RELEASE SAVEPOINT one_target_row")
+                        cursor.execute(
+                            """INSERT INTO ingestion_row_errors
+                                 (job_id, batch_number, source_row_number, error_category, details)
+                               VALUES (?, ?, ?, 'target_insert_error', ?)
+                               ON CONFLICT (job_id, source_row_number) DO UPDATE SET
+                                 batch_number = EXCLUDED.batch_number,
+                                 error_category = EXCLUDED.error_category,
+                                 details = EXCLUDED.details, created_at = now()""",
+                            (job_id, batch_number, source_row, str(error)[:4000]),
+                        )
+                        failed += 1
+        else:
+            logger.info(
+                "Skipping bulk insert because batch has no valid rows; job id=%d; start row=%d; end row=%d",
+                job_id,
+                start_row,
+                end_row,
+            )
 
         cursor.execute(
             """UPDATE ingestion_batches SET status = ?, rows_inserted = ?, rows_failed = ?,
