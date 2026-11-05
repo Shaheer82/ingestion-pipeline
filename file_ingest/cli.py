@@ -1,8 +1,6 @@
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import closing
-from dataclasses import replace
-import hashlib
 import json
 import logging
 from pathlib import Path
@@ -44,14 +42,6 @@ def _resolve_requested_table(tables, requested_name: str | None):
             f"Table name {requested_name!r} exists in multiple eligible schemas; use schema.table",
         )
     return candidates[0], None
-
-
-def _target_scoped_file(file, target_name: str | None, resolved_target):
-    if target_name is None:
-        return file
-    identity_target = resolved_target.qualified_name if resolved_target else target_name
-    identity = hashlib.sha256(f"{file.identity}\0{identity_target}".encode("utf-8")).hexdigest()
-    return replace(file, identity=identity)
 
 
 def _process_task(settings: Settings, file, job_id: int, match: MatchResult, batch_size: int):
@@ -115,10 +105,9 @@ def main() -> int:
             tables = load_target_tables(connection, schemas)
             requested_table, table_selection_error = _resolve_requested_table(tables, args.table_name)
             for file in files:
-                job_file = _target_scoped_file(file, args.table_name, requested_table)
-                previous_job = find_job(connection, job_file.identity)
+                previous_job = find_job(connection, file.identity)
 
-                logging.info("Previous job data: %s for file identity: %s", previous_job, job_file.identity)
+                logging.info("Previous job data: %s for file identity: %s", previous_job, file.identity)
 
                 if previous_job and previous_job[1] in {"succeeded", "succeeded_with_errors"}:
                     print(json.dumps({
@@ -161,10 +150,13 @@ def main() -> int:
                             )
                     except Exception as error:
                         match = MatchResult("failed", None, (), str(error))
+
+                logging.info("Match data: %s for file: %s", match, file.path)
+
                 batch_size = previous_job[4] if previous_job else settings.batch_size
-                job_id = job_id or record_job(connection, job_file, match, batch_size)
+                job_id = job_id or record_job(connection, file, match, batch_size)
                 if match.status == "table_matched":
-                    tasks.append((job_file, job_id, match, batch_size))
+                    tasks.append((file, job_id, match, batch_size))
                 else:
                     print(json.dumps({
                         "job_id": job_id,
