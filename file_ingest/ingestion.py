@@ -67,10 +67,6 @@ def _target_insert_sql(match: MatchResult, headers: list[str]):
 def _lookup_batch(connection, job_id: int, batch_number: int):
     cursor = connection.cursor()
     try:
-        # Initialize this session's temporary schema before creating its helper.
-        cursor.execute(
-            "CREATE TEMP TABLE IF NOT EXISTS ingest_validation_bootstrap (value INTEGER)"
-        )
         cursor.execute(
             "SELECT status FROM ingestion_batches WHERE job_id = ? AND batch_number = ?",
             (job_id, batch_number),
@@ -122,6 +118,11 @@ def _stage_batch(connection, job_id: int, batch_number: int, rows: list[tuple[in
 def _create_validation_function(connection) -> None:
     cursor = connection.cursor()
     try:
+        # Initialize this connection's temporary schema before creating the
+        # session-local helper function in pg_temp.
+        cursor.execute(
+            "CREATE TEMP TABLE IF NOT EXISTS ingest_validation_bootstrap (value INTEGER)"
+        )
         cursor.execute(
             """CREATE OR REPLACE FUNCTION pg_temp.ingest_is_valid_cast(input_value TEXT, target_type TEXT)
                RETURNS BOOLEAN LANGUAGE plpgsql AS $$
