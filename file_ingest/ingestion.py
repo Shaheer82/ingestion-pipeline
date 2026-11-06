@@ -217,11 +217,28 @@ def _write_batch(
     bulk_sql: str,
     row_sql: str,
     source_keys: list[str],
+    file_path: str,
 ):
     start_row, end_row = rows[0][0], rows[-1][0]
     cursor = connection.cursor()
     inserted = failed = 0
+    failed_row_numbers = []
+    failure_details = []
     try:
+        cursor.execute(
+            """SELECT source_row_number, error_category, error_details
+               FROM ingestion_staging_rows
+               WHERE job_id = ? AND source_row_number BETWEEN ? AND ?
+                 AND validation_status = 'invalid'
+               ORDER BY source_row_number""",
+            (job_id, start_row, end_row),
+        )
+        validation_errors = cursor.fetchall()
+        failed_row_numbers.extend(int(row[0]) for row in validation_errors)
+        failure_details.extend(
+            (int(row[0]), row[1], row[2]) for row in validation_errors
+        )
+
         cursor.execute(
             "DELETE FROM ingestion_row_errors WHERE job_id = ? AND source_row_number BETWEEN ? AND ?",
             (job_id, start_row, end_row),
@@ -247,7 +264,8 @@ def _write_batch(
                 inserted = len(cursor.fetchall())
                 cursor.execute("RELEASE SAVEPOINT bulk_target_write")
                 logger.info(
-                    "Bulk insert succeeded; Bulk SQL=%s; valid_rows=%d; job id=%d; start row=%d; end row=%d",
+                    "Bulk insert succeeded:\n file=%s\n Bulk SQL=%s\n valid_rows=%d\n job id=%d\n start row=%d\n end row=%d\n",
+                    file_path,
                     bulk_sql,
                     len(valid_rows),
                     job_id,
@@ -255,10 +273,16 @@ def _write_batch(
                     end_row,
                 )
             except Exception:
-                logger.info(
-                    "Bulk insert failed, entered row-by-row insertion; Row SQL=%s; valid_rows=%d",
-                    row_sql,
+                logger.exception(
+                    "Bulk target insert failed; falling back to row savepoints:\n file=%s\n job_id=%d\n "
+                    "batch=%d\n source_rows=%d-%d\n candidate_rows=%d\n SQL=%s\n",
+                    file_path,
+                    job_id,
+                    batch_number,
+                    start_row,
+                    end_row,
                     len(valid_rows),
+                    bulk_sql,
                 )
                 # A database constraint rejected the bulk write. Retry only
                 # these otherwise-valid rows to identify the rejected rows.
@@ -278,6 +302,17 @@ def _write_batch(
                     except Exception as error:
                         cursor.execute("ROLLBACK TO SAVEPOINT one_target_row")
                         cursor.execute("RELEASE SAVEPOINT one_target_row")
+                        error_details = str(error)[:4000]
+                        failed_row_numbers.append(source_row)
+                        failure_details.append((source_row, "target_insert_error", error_details))
+                        logger.exception(
+                            "Target row insert failed:\n file=%s\n job_id=%d\n batch=%d\n source_row=%d\n SQL=%s\n",
+                            file_path,
+                            job_id,
+                            batch_number,
+                            source_row,
+                            row_sql,
+                        )
                         cursor.execute(
                             """INSERT INTO ingestion_row_errors
                                  (job_id, batch_number, source_row_number, error_category, details)
@@ -286,12 +321,12 @@ def _write_batch(
                                  batch_number = EXCLUDED.batch_number,
                                  error_category = EXCLUDED.error_category,
                                  details = EXCLUDED.details, created_at = now()""",
-                            (job_id, batch_number, source_row, str(error)[:4000]),
+                            (job_id, batch_number, source_row, error_details),
                         )
                         failed += 1
         else:
             logger.info(
-                "Skipping bulk insert because batch has no valid rows; job id=%d; start row=%d; end row=%d",
+                "Skipping bulk insert because batch has no valid rows:\n job id=%d\n start row=%d\n end row=%d\n",
                 job_id,
                 start_row,
                 end_row,
@@ -311,6 +346,33 @@ def _write_batch(
             ),
         )
         connection.commit()
+        if failed_row_numbers:
+            shown_errors = failure_details[:20]
+            logger.warning(
+                "Batch completed with row errors:\n file=%s\n job_id=%d\n batch=%d\n source_rows=%d-%d\n "
+                "failed_rows=%s\n inserted=%d\n failed=%d\n error_details_sample=%s%s\n",
+                file_path,
+                job_id,
+                batch_number,
+                start_row,
+                end_row,
+                sorted(set(failed_row_numbers)),
+                inserted,
+                failed,
+                shown_errors,
+                f" (and {len(failure_details) - 20} more)" if len(failure_details) > 20 else "",
+            )
+        else:
+            logger.info(
+                "Batch completed:\n file=%s\n job_id=%d\n batch=%d\n source_rows=%d-%d\n "
+                "inserted=%d\n failed=0\n",
+                file_path,
+                job_id,
+                batch_number,
+                start_row,
+                end_row,
+                inserted,
+            )
         return inserted, failed
     except Exception:
         connection.rollback()
@@ -343,7 +405,7 @@ def process_file(connection, file: DiscoveredFile, job_id: int, match: MatchResu
         )
         inserted, failed = _write_batch(
             connection, job_id, batch_number, rows, valid_rows, invalid_count,
-            bulk_sql, row_sql, source_keys
+            bulk_sql, row_sql, source_keys, str(file.path.resolve())
         )
         total_inserted += inserted
         total_failed += failed

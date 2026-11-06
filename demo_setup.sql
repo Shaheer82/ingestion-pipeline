@@ -50,3 +50,16 @@ CREATE TABLE IF NOT EXISTS public.catalog_b (
     code TEXT,
     label TEXT
 );
+
+-- Run this in the PostgreSQL database used by the ingestion project.
+-- The products.csv fixture has 10 fields; this target table has 8 columns.
+CREATE TABLE IF NOT EXISTS public.products (
+    product_id INTEGER PRIMARY KEY,
+    product_name TEXT NOT NULL,
+    category TEXT NOT NULL,
+    brand TEXT,
+    unit_price NUMERIC(10, 2) NOT NULL,
+    stock_quantity INTEGER NOT NULL,
+    is_active BOOLEAN NOT NULL,
+    created_at DATE NOT NULL
+);

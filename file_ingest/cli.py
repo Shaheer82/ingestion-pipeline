@@ -13,6 +13,8 @@ from .matching import match_target
 from .models import MatchResult
 from .readers import discover_files, read_headers
 
+logger = logging.getLogger(__name__)
+
 
 def _resolve_requested_table(tables, requested_name: str | None):
     if requested_name is None:
@@ -62,6 +64,12 @@ def _process_task(settings: Settings, file, job_id: int, match: MatchResult, bat
                 "batches_processed_this_run": batches,
             })
     except Exception as error:
+        logger.exception(
+            "File ingestion failed; file=%s job_id=%d target=%s",
+            str(file.path.resolve()),
+            job_id,
+            match.target.qualified_name if match.target else None,
+        )
         try:
             with closing(connect(settings.jdbc_url, settings.jdbc_driver, settings.jdbc_jar)) as connection:
                 mark_job_failed(connection, job_id, str(error))
@@ -107,7 +115,7 @@ def main() -> int:
             for file in files:
                 previous_job = find_job(connection, file.identity)
 
-                logging.info("Previous job data: %s for file identity: %s", previous_job, file.identity)
+                logger.info("Previous job data: %s for file : %s", previous_job[0] if previous_job else None, file.path.resolve())
 
                 if previous_job and previous_job[1] in {"succeeded", "succeeded_with_errors"}:
                     print(json.dumps({
@@ -151,7 +159,7 @@ def main() -> int:
                     except Exception as error:
                         match = MatchResult("failed", None, (), str(error))
 
-                logging.info("Match data: %s for file: %s", match, file.path)
+                logger.info("Match data: '%s' for file: %s\n", match.status, file.path)
 
                 batch_size = previous_job[4] if previous_job else settings.batch_size
                 job_id = job_id or record_job(connection, file, match, batch_size)
@@ -167,7 +175,7 @@ def main() -> int:
                         "details": match.details,
                     }, indent=2))
 
-        logging.info(
+        logger.info(
             "Queued ingestion tasks: %s",
             json.dumps(
                 [
@@ -181,6 +189,7 @@ def main() -> int:
                     }
                     for file, job_id, match, batch_size in tasks
                 ],
+                indent=2,
                 ensure_ascii=False,
             ),
         )

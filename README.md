@@ -43,6 +43,8 @@ Database access uses JDBC through JayDeBeApi and the PostgreSQL JDBC driver. `JD
 
 Set `BATCH_SIZE` to control rows per batch (default `1000`) and `WORKERS` to control concurrent files (default `4`). Each worker opens its own JDBC connection. The database role needs permission to read table metadata, create the ingestion tracking tables, and insert into eligible target tables.
 
+Runtime logs are written to `ingestion.log` and the console. Bulk target insert failures are logged with the file, job, batch, source-row range, SQL, and traceback before savepoint fallback begins. Row-level validation and target insert failures include their source row numbers and error details; raw record values are not logged. Detailed row errors are also stored in `ingestion_row_errors`.
+
 ## Processing and recovery
 
 For each unique table match, records are streamed into `ingestion_staging_rows` with their source row number. A set-based validation update marks each staged row `valid` or `invalid` based on the target column types and nullability. Invalid rows and their validation reasons are copied to `ingestion_row_errors` in one SQL statement. Valid rows are then inserted into the target in one set-based statement. Target inserts, row errors, and batch completion status commit together.
