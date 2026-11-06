@@ -8,7 +8,7 @@ The importer discovers comma-separated CSV and flat JSON files, matches each fil
 - Duplicate input headers are rejected when they differ only by letter case.
 - CSV files must be comma-separated.
 - JSON may be one flat object or an array of flat objects. Nested objects and arrays inside records are rejected. JSON Lines/NDJSON is not supported.
-- Duplicate data rows are loaded as received; no deduplication is performed.
+- Duplicate data rows are attempted as received. PostgreSQL unique or primary-key conflicts are skipped with `ON CONFLICT DO NOTHING`; rows without such a constraint are not deduplicated.
 
 ## Setup
 
@@ -47,7 +47,7 @@ Set `BATCH_SIZE` to control rows per batch (default `1000`) and `WORKERS` to con
 
 For each unique table match, records are streamed into `ingestion_staging_rows` with their source row number. A set-based validation update marks each staged row `valid` or `invalid` based on the target column types and nullability. Invalid rows and their validation reasons are copied to `ingestion_row_errors` in one SQL statement. Valid rows are then inserted into the target in one set-based statement. Target inserts, row errors, and batch completion status commit together.
 
-Some target rules, such as unique, check, and foreign-key constraints, depend on existing or concurrent target data and cannot all be prevalidated generically. If such a constraint rejects the valid-row bulk insert, the importer rolls back that attempt and uses per-row savepoints only for those otherwise-valid rows to identify which constraint failed. This is a slower fallback for those batches; ordinary type and nullability errors are classified before insertion.
+Primary-key and other unique conflicts are skipped by `ON CONFLICT DO NOTHING` in both the bulk insert and its per-row fallback. They are not counted as inserted or logged as errors. Other target rules, such as check and foreign-key constraints, cannot all be prevalidated generically. If one rejects the valid-row bulk insert, the importer rolls back that attempt and uses per-row savepoints only for those otherwise-valid rows to identify the rejected rows. This is a slower fallback for those batches; ordinary type and nullability errors are classified before insertion.
 
 The tracking tables are `ingestion_jobs`, `ingestion_batches`, `ingestion_staging_rows`, and `ingestion_row_errors`. `ingestion_batches` records batch status, row counts, and retries. CSV source row numbering starts at 2 to account for the header; JSON record numbering starts at 1.
 

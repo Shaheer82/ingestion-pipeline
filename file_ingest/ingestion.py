@@ -59,11 +59,12 @@ def _target_insert_sql(match: MatchResult, headers: list[str]):
         f"SELECT {', '.join(expressions)} FROM ingestion_staging_rows AS s "
         "WHERE s.job_id = ? AND s.source_row_number BETWEEN ? AND ? "
         "AND s.validation_status = 'valid' "
-        "ORDER BY s.source_row_number"
+        "ORDER BY s.source_row_number "
+        "ON CONFLICT DO NOTHING RETURNING 1"
     )
     row_sql = (
         f"INSERT INTO {table_sql} ({column_sql}){overriding} "
-        f"VALUES ({', '.join(row_values)})"
+        f"VALUES ({', '.join(row_values)}) ON CONFLICT DO NOTHING RETURNING 1"
     )
     return bulk_sql, row_sql, source_keys
 
@@ -243,7 +244,7 @@ def _write_batch(
             cursor.execute("SAVEPOINT bulk_target_write")
             try:
                 cursor.execute(bulk_sql, (job_id, start_row, end_row))
-                inserted = len(valid_rows)
+                inserted = len(cursor.fetchall())
                 cursor.execute("RELEASE SAVEPOINT bulk_target_write")
                 logger.info(
                     "Bulk insert succeeded; Bulk SQL=%s; valid_rows=%d; job id=%d; start row=%d; end row=%d",
@@ -267,12 +268,13 @@ def _write_batch(
                     cursor.execute("SAVEPOINT one_target_row")
                     try:
                         cursor.execute(row_sql, tuple(record.get(key) for key in source_keys))
+                        was_inserted = cursor.fetchone() is not None
                         cursor.execute("RELEASE SAVEPOINT one_target_row")
                         cursor.execute(
                             "DELETE FROM ingestion_row_errors WHERE job_id = ? AND source_row_number = ?",
                             (job_id, source_row),
                         )
-                        inserted += 1
+                        inserted += int(was_inserted)
                     except Exception as error:
                         cursor.execute("ROLLBACK TO SAVEPOINT one_target_row")
                         cursor.execute("RELEASE SAVEPOINT one_target_row")
