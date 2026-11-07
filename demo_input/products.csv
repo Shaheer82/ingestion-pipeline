@@ -1,0 +1,15 @@
+product_id,product_name,category,brand,unit_price,stock_quantity,is_active,created_at,supplier,warehouse_location
+1001,Wireless Mouse,Accessories,LogiTech,24.99,150,TRUE,15-01-2025,Northwind Supplies,A1
+1002,Mechanical Keyboard,Accessories,KeyCraft,89.5,75,TRUE,18-01-2025,KeySource,B3
+1003,USB-C Hub,Accessories,ConnectPro,39.95,120,TRUE,02-02-2025,Northwind Supplies,A2
+1004,27 inch Monitor,Displays,ViewPoint,229,40,TRUE,10-02-2025,ScreenWorld,C1
+1005,Desk Lamp,Office,BrightLite,32.49,90,TRUE,14-02-2025,Office Depot,D4
+1006,Notebook,Office,PaperTree,4.25,500,TRUE,01-03-2025,Paper Source,D1
+1007,Water Bottle,Accessories,HydroPeak,18.75,200,TRUE,08-03-2025,Outdoor Goods,B1
+1008,Laptop Stand,Office,ErgoWorks,45,60,TRUE,12-03-2025,Workplace Co,C3
+1009,HDMI Cable,Accessories,ConnectPro,9.99,300,TRUE,20-03-2025,Northwind Supplies,A3
+1010,Webcam,Electronics,ClearView,59.95,55,TRUE,05-04-2025,Tech Wholesale,C2
+1011,Wireless Headset,Electronics,SoundWave,74.5,35,TRUE,12-04-2025,Audio Central,B4
+1012,Ergonomic Chair,Furniture,ComfortSeat,319.99,18,TRUE,20-04-2025,Furnish Direct,E1
+1013,Microwave,Electronics,Bajaj,abc,5,TRUE,20-04-2025,Furnish Direct,E1
+1014,Microwave,Electronics,Bajaj,abc,5,TRUE,20-04-2025,Furnish Direct,E1

@@ -55,16 +55,33 @@ def _validate_flat_json_record(record: Any, record_number: int) -> dict[str, Any
 
 def discover_files(root: Path) -> list[DiscoveredFile]:
     if not root.exists():
-        return []
+        raise FileNotFoundError(f"Input path does not exist: {root}")
+    if root.is_file():
+        if root.suffix.casefold() not in SUPPORTED_SUFFIXES:
+            raise ValueError(
+                f"Unsupported file extension: {root.suffix}. Only .csv and .json are supported"
+            )
+        paths = [root]
+    elif root.is_dir():
+        paths = sorted(
+            candidate
+            for candidate in root.rglob("*")
+            if candidate.is_file() and candidate.suffix.casefold() in SUPPORTED_SUFFIXES
+        )
+    else:
+        raise ValueError(f"Input path is not a regular file or folder: {root}")
+
     result = []
-    for path in sorted(candidate for candidate in root.rglob("*") if candidate.is_file()):
-        if path.suffix.casefold() not in SUPPORTED_SUFFIXES:
-            continue
+    for path in paths:
         digest = hashlib.sha256()
         with path.open("rb") as source:
             for chunk in iter(lambda: source.read(1024 * 1024), b""):
                 digest.update(chunk)
-        result.append(DiscoveredFile(path, digest.hexdigest(), path.stat().st_size))
+        # Include the normalized absolute path so identical content in two
+        # different files is tracked as two independent ingestion jobs.
+        identity_source = f"{path.resolve()}\0{digest.hexdigest()}".encode("utf-8")
+        identity = hashlib.sha256(identity_source).hexdigest()
+        result.append(DiscoveredFile(path, identity, path.stat().st_size))
     return result
 
 
@@ -94,7 +111,7 @@ def read_headers(path: Path) -> list[str]:
     raise ValueError(f"Unsupported file extension: {suffix}. Only .csv and .json are supported")
 
 
-def iter_records(path: Path) -> Iterator[dict[str, Any]]:
+def iter_records(path: Path) -> Iterator[tuple[int, dict[str, Any]]]:
     """Yield CSV rows or flat JSON records incrementally."""
     suffix = path.suffix.casefold()
     if suffix == ".csv":
@@ -108,7 +125,7 @@ def iter_records(path: Path) -> Iterator[dict[str, Any]]:
                     raise ValueError(
                         f"CSV row {row_number} has {len(values)} values; expected {len(headers)}"
                     )
-                yield dict(zip(headers, values))
+                yield row_number, dict(zip(headers, values))
         return
 
     if suffix == ".json":
@@ -117,10 +134,10 @@ def iter_records(path: Path) -> Iterator[dict[str, Any]]:
             _skip_utf8_bom(source)
             if marker == b"[":
                 for record_number, record in enumerate(ijson.items(source, "item"), start=1):
-                    yield _validate_flat_json_record(record, record_number)
+                    yield record_number, _validate_flat_json_record(record, record_number)
             elif marker == b"{":
                 record = dict(ijson.kvitems(source, ""))
-                yield _validate_flat_json_record(record, 1)
+                yield 1, _validate_flat_json_record(record, 1)
             else:
                 raise ValueError("JSON must be a flat object or an array of flat objects")
         return

@@ -1,4 +1,7 @@
 ﻿[
   {"order_id": 101, "customer_id": 1, "amount": 49.95},
-  {"order_id": 102, "customer_id": 2, "amount": 19.50}
+  {"order_id": 102, "customer_id": 2, "amount": 19.50},
+  {"order_id": "xyz", "customer_id": 2, "amount": 19.50},
+  {"order_id": 103, "customer_id": 3, "amount": 29.50},
+  {"order_id": "abc", "customer_id": 4, "amount": 19.50}
 ]

@@ -10,6 +10,8 @@ class TargetColumn:
     nullable: bool
     has_default: bool
     generated: bool
+    type_sql: str = "text"
+    identity_always: bool = False
 
     @property
     def required_for_mapping(self) -> bool:
