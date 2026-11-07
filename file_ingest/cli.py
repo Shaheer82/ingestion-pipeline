@@ -86,7 +86,6 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         handlers=[
             logging.FileHandler(log_file, encoding="utf-8"),
-            logging.StreamHandler(),
         ],
     )
     parser = argparse.ArgumentParser(description="Ingest CSV and flat JSON files into matched PostgreSQL tables")
